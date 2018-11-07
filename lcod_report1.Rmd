@@ -1,0 +1,446 @@
+---
+title: "Analysis of Leading Causes of Death in the United States, 1999-2016"
+author: Christopher Brown (christopherabrown42@gmail.com)
+output:   
+  html_document:
+    toc: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Disclaimer/version
+This report is intended to be a demonstration of of various coding techniques and an exploration of this dataset, and is not intended for publication.
+
+Areas for improvement: The analysis of mean age-adjusted death rate is not particularly valid in current form.
+
+Resolutions: incorporate population data for states, and acquire or compute the weightings used to derive age-adjusted death rates
+
+Last edited on 11/6/18, Reason: further code comments for more complex code chunks
+
+# Preparation of the data
+
+## Load necessary packages
+```{r libraries, message = FALSE}
+library(tidyverse)    # tidyverse packages include dyplr for data manipulation, and ggplot
+library(stringr)      # stringr includes functions for manipulating character strings
+library(forcats)      # forcats includes functions for handling factor/categorical variables
+library(corrplot)     # this package allows for a correlation plot
+```
+
+As a first step, let's acquire the dataset from [data.gov](https://data.cdc.gov/api/views/bi63-dtpu/rows.csv?accessType=DOWNLOAD&bom=true&format=true) and examine its structure.
+```{r load, message = FALSE}
+# Dataset is loaded with read_csv from the readr package (included with tidyverse)
+# Read_csv has better handling of several issues than does read.csv from base R
+lcod_us <- read_csv("https://data.cdc.gov/api/views/bi63-dtpu/rows.csv?accessType=DOWNLOAD&bom=true&format=true")
+
+# Glimpse (dplyr) allows for an easily readible snapshot of the structure of the dataset and its initial values
+glimpse(lcod_us)
+```
+
+## Adjusting variable names
+
+The following code makes adjustments to variable names to follow best practice naming conventions in R.
+```{r clean_names}
+# Clean up white space in variable names to avoid unexpected errors, and make lower case for consistency
+# First, str_replace_all (stringr) replaces spaces with underscores
+# Secondly, str_to_lower (stringr) converts all characters to lowercase
+names(lcod_us) <- str_to_lower(str_replace_all(names(lcod_us), " ", "_"))
+
+# Additionally, replace the hyphen in Age-adjusted_Death_Rate with an underscore to match R naming conventions
+# the hyphen is interpretted as subtraction unless the name of the var is enclosed in backticks ` `
+# Lastly, drop the variable 113_Cause_Name because it captures the same effective information as cause_name
+# both of these operations are accomplished within a single call from the select function (dplyr)
+lcod_us_clean <- lcod_us %>%
+  select(everything(), age_adjusted_death_rate = `age-adjusted_death_rate`, -`113_cause_name`)
+```
+
+## Factor variables
+
+Next, we'll change the character type variables into factors, which will be useful for creating plots later on.
+```{r char_factor}
+# Make state and causes, which are of type character, into variables of type factor using mutate_if (dplyr)
+lcod_us_clean <- lcod_us_clean %>%
+    mutate_if(is.character, as.factor)
+```
+
+# Exploratory Data Analysis
+
+To get a better understanding of the underlying data, let's view its structure and a summary of the data.
+```{r}
+# Use glimpse() and view summary() of data to see how it looks after cleaning
+glimpse(lcod_us_clean)
+summary(lcod_us_clean)
+```
+
+At this point, the dataset consists of 5 variables, and 10,296 observations from 1999 to 2016. It contains information from 50 states, the District of Columbia, as well as the United States as a whole. The cause_name variable contains 11 different causes of death, although one of those is *All causes*.
+
+## US census Regions
+Next, let's create a region variable for grouping of states. These groupings will be created from Census Bureau-designated [regions](https://en.wikipedia.org/wiki/List_of_regions_of_the_United_States).
+
+```{r region}
+# Region variable: created from Census Bureau-designated regions 
+
+# Create character string northeast, comprised of the names of states from the northeast region
+northeast <- "Connecticut, Maine, Massachusetts, New Hampshire, Rhode Island, Vermont, New Jersey, New York, Pennsylvania"
+# Split northeast into a vector of states
+northeast <- unlist(str_split(northeast, ", "))
+
+# Create character string midwst, comprised of the names of states from the midwest region
+# named midwst to avoid potential conflict with ggplot2 object: midwest
+midwst <- "Illinois, Indiana, Michigan, Ohio, Wisconsin, Iowa, Kansas, Minnesota, Missouri, Nebraska, North Dakota, South Dakota"
+# Split midwst into a vector of states
+midwst <- unlist(str_split(midwst, ", "))
+
+# Create character string south, comprised of the names of states from the south region
+south <- "Delaware, Florida, Georgia, Maryland, North Carolina, South Carolina, Virginia, District of Columbia, West Virginia, Alabama, Kentucky, Mississippi, Tennessee, Arkansas, Louisiana, Oklahoma, Texas"
+# Split south into a vector of states
+south <- unlist(str_split(south, ", "))
+
+# Create character string west, comprised of the names of states from the west region
+west <- "Arizona, Colorado, Idaho, Montana, Nevada, New Mexico, Utah, Wyoming, Alaska, California, Hawaii, Oregon, Washington"
+# Split west into a vector of states
+west <- unlist(str_split(west, ", "))
+
+# Create Region variable using mutate
+# Assign to specified region when a state is in the region vector of the same name
+lcod_reg <- lcod_us_clean %>%
+  mutate(region = as.factor(case_when(as.character(state) %in% northeast ~ "Northeast",
+                            as.character(state) %in% midwst ~ "Midwest",
+                            as.character(state) %in% south ~ "South",
+                            as.character(state) %in% west ~ "West",
+                            TRUE ~ as.character(state)))   # creates "United States" region for all other cases
+  )
+```
+
+### Leading causes of death
+The code below calculates summaries of deaths by combinations of region and cause. This is somewhat skewed, due to the fact that more people live in the *South* census region. However,  it is also clear that certain causes of death trend similarly across regions. It isn't a surprise to see that *heart disease* and *cancer* are the two leading causes of deaths in the United States.
+
+```{r summarize_most_deaths}
+# Top 20 sums of deaths by region and cause
+lcod_reg %>%
+  # Filter out rows that include All causes of death, or rows that include the United States at large
+  filter(cause_name != "All causes",
+       region != "United States") %>%
+  # Group the data by a combination of region and cause of death
+  group_by(region, cause_name) %>%
+  # Summarize the deaths based on the grouping above
+  summarize(sum_deaths = sum(deaths)) %>%
+  # Sort the resulting summary data in descending order
+  arrange(desc(sum_deaths)) %>%
+  # Display the top 20 results
+  head(20)
+```
+
+
+#### Less likely causes
+
+As it turns out, the least likely causes (recorded in this dataset) tend to be *suicide* and *kidney disease*.
+```{r summarize_least_deaths}
+# Bottom 20 sums of deaths by region and cause
+lcod_reg %>%
+  # Filter out rows that include All causes of death, or rows that include the United States at large
+  filter(cause_name != "All causes",
+       region != "United States") %>%
+  # Group the data by a combination of region and cause of death
+  group_by(region, cause_name) %>%
+  # Summarize the deaths based on the grouping above
+  summarize(sum_deaths = sum(deaths)) %>%
+  # Sort the resulting summary data in ascending order
+  arrange(sum_deaths) %>%
+  # Display the top (effectively bottom due to sorting) 20 results
+  head(20)
+```
+
+The following code creates plots of 50 states and DC's deaths over time. We'll investigate the most populous states further. 
+```{r all_states_causes_plot}
+# Filter out rows that include All causes of death, or rows that include the United States at large
+filter(lcod_reg, state != "United States", cause_name != 'All causes') %>%
+# Create ggplot and aesthetic mappings, including reordering and sorting causes by the amount of deaths
+  ggplot(aes(x = year, y = deaths, color = fct_rev(fct_reorder(cause_name, deaths)))) +
+  # Add scatterpoint and line layers to the plot
+    geom_point() +
+    geom_line() +
+  # Add faceting by state, which creates a separate plot for each state
+    facet_wrap(~ state) +
+  # Assign causes to color label legend
+    scale_color_discrete(name = "Cause")
+```
+
+
+## Comparison of deaths over time for most populous states
+
+Creating a function to automate plotting for causes of death over time.
+```{r plot_state_deaths}
+# Function for plotting deaths over time according to input state: st
+plot_state_deaths <- function(st) {
+  lcod_reg %>%
+    # Select only the state that was supplied to the function
+    filter(state == st) %>%
+    # Create ggplot, aesthetic mappings
+   ggplot(aes(x = year, y = deaths, color = cause_name)) +
+    # Add scatterplot, line, and linear model layers to the plot
+    geom_point() +
+    geom_line() + 
+    geom_smooth(method = "lm", se = FALSE) +
+    # Add a title to the plot, based on the name of the state
+    labs(title =  paste("Deaths for", st, "over time, colored by Cause"))
+}
+```
+
+### Top 5 states with most deaths
+
+```{r top_states_deaths}
+# Filter for the 5 states with the most deaths
+top_states_deaths <- lcod_reg %>%
+  # Remove United States at large
+  filter(state != "United States") %>%
+  # Group observations by state
+  group_by(state) %>%
+  # Summarize the data by creating a sum of deaths
+  summarize(num = sum(deaths)) %>%
+  # Select 5 states with highest sums of deaths
+  top_n(5, num) %>%
+  # Sort in descending order
+  arrange(desc(num)) %>%
+  # Retrieve the vector of 5 states
+  pull(state)
+```
+
+Now, we'll call the function we created with the map() funtion from the purrr library. This will call the plot function once for each of the top 5 states with the most deaths.
+
+```{r map_plot}
+# Plot the 5 states with most overall deaths, using the map() function (purrr)
+map(top_states_deaths, plot_state_deaths)
+```
+
+
+# Analysis
+
+## Leading causes of death in 2016
+
+What were the 2 leading aadr causes of death for each region in 2016?
+``` {r top_2_causes_region, message = FALSE}
+lcod_reg %>%
+  # Filter such that only data for the year 2016 is selected, and filter out 'All causes' of death
+  filter(year == 2016, cause_name != "All causes") %>%
+  # Group the data by a combination of region and causes
+  group_by(region, cause_name) %>%
+  # Create summaries of the mean adjusted death rate, by causes of death per region
+  summarize(mean_aadr = mean(age_adjusted_death_rate)) %>%
+  # Select the top 2 causes of death per region
+  top_n(2) %>%
+  # Sort result in descing order
+  arrange(desc(mean_aadr))
+```
+
+## Comparison of cause of death between 1999 and 2016
+
+Firstly, the following code summarizes mean aadr by region and cause for 1999 and 2016
+```{r lcod_reg_99_16}
+lcod_reg_99_16 <- lcod_reg %>%
+  # Filter out any year that isn't 1999 or 2016
+  filter(year == 1999 | year == 2016) %>%
+  # Group by a combination of region, year and cause of death
+  group_by(region, year, cause_name) %>%
+  # Create summaries of mean adjusted death rate by region, year, and cause of death
+  summarize(mean_aadr = mean(age_adjusted_death_rate))
+```
+
+In the following plot, the change in cancer and heart disease death rates since 1999 are compared. There has been a noticeable increase in both across all regions.
+```{r path_hd_cancer}
+lcod_reg_99_16 %>%
+  # Filter out rows that do not include Cancer or Heart Disease as the cause of death
+  filter(cause_name %in% c("Cancer", "Heart disease")) %>%
+  # Create an arrow plot to show the trend between the two years
+  ggplot(aes(x = mean_aadr, y = fct_reorder(region, mean_aadr))) +
+    # Add a scatterplot layer, colored by year
+    geom_point(aes(color = as.factor(year))) +
+    # Add the arrow layer to the plot
+    geom_path(arrow = arrow(length = unit(1.5, "mm"), type = "closed")) +
+    # Add faceting, so that Cancer and Heart Disease are plotted side by side
+    facet_wrap(~ cause_name) +
+    # Make adjustments to the numeric values displayed above/below the points, for improved readability
+    geom_text(aes(x = mean_aadr, y = region, label = round(mean_aadr, 2),
+                vjust = ifelse(year == "2016", 1.5, -1.0))) +
+    # Add proper descriptive labels to the plot
+    labs(x = "Average Age-Adjusted Death Rate", y = "Region",
+       title = "Are deaths occuring at similar rates across regions?",
+       subtitle = paste("Average age-adjusted death rate by region, since 1999")) +
+    # Add label to color legend
+    scale_color_discrete(name = "Year") +
+    # Zoom in the plot by adjusting viewing area on the x-axis
+    coord_cartesian(xlim = c(136, 290))
+```
+
+
+The next faceted plot shows the trend in Alzheimer's Disease and CLRD between 1999 and 2016. In this case, it can be seen that Alzheimer's disease is one of the few major causes of death that has actually increased substantially in all regions during this time frame. For CLRD, there is a modest decrease in the West and Northeast, with little change elsewhere.
+
+```{r path_ad_clrd}
+lcod_reg_99_16 %>%
+  # Filter out rows that do not include Alzheimer's disease or CLRD as the cause of death
+  filter(cause_name %in% c("Alzheimer's disease", "CLRD")) %>%
+  # Create an arrow plot to show the trend between the two years
+  ggplot(aes(x = mean_aadr, y = fct_reorder(region, mean_aadr))) +
+    # Add a scatterplot layer, colored by year  
+    geom_point(aes(color = as.factor(year))) +
+    # Add the arrow layer to the plot
+    geom_path(arrow = arrow(length = unit(1.5, "mm"), type = "closed")) +
+    # Add faceting, so that Alzheimer's disease and CLRD are plotted side by side
+    facet_wrap(~ cause_name) +
+    # Make adjustments to the numeric values displayed above/below the points, for improved readability
+    geom_text(aes(x = mean_aadr, y = region, label = round(mean_aadr, 2),
+                vjust = ifelse(year == "2016", 1.5, -1.0))) +
+    # Add proper descriptive labels to the plot
+    labs(x = "Average Age-Adjusted Death Rate", y = "Region",
+       title = "Are deaths occuring at similar rates across regions?",
+       subtitle = paste("Average age-adjusted death rate by region, since 1999")) +
+    # Add label to color legend
+    scale_color_discrete(name = "Year") +
+    # Zoom in the plot by adjusting viewing area on the x-axis
+    coord_cartesian(xlim = c(15, 53))
+```
+
+## Transform dataset to uncover correlations
+
+To get a better understanding of possible correlations within causes of death, the dataset can be restructured so that each cause of death is a variable, rather than a sub-category.
+```{r spread_ds}
+# Transform dataset from long to wide: age_adjusted_death_rate
+lcod_reg_wide <- select(lcod_reg, -deaths) %>%
+  # The spread function (dplyr) takes a categorical variable and splits it into numerous keys,
+  # with values supplied by the value column argument
+  spread(key = cause_name, value = age_adjusted_death_rate)
+```
+
+Below is a snapshot of the first 10 rows in the restructured dataset.
+```{r}
+# View first 10 rows of restructured data
+head(lcod_reg_wide, 10)
+```
+
+### Correlation plot
+
+Now that the data has been restructured, correlations between the causes of death can be computed and plotted.
+```{r corrplot_wide}
+# Create correlation matrix and then plot correlations for year, causes of death
+# First, deselect categorical variables 'state' and 'region'
+select(lcod_reg_wide, -state, -region) %>%
+  # Create the correlation matrix
+  cor() %>%
+  # Create the correlation plot
+  corrplot(tl.cex = .8)
+```
+
+
+### Line plot of all states for all causes of death 
+
+Although this faceted plot is very noisy due to the number of states included, because the states are ordered by higher 'all causes' death rates, there is a clear trend: the first 11 states (those with highest *all cause* age-adjusted death rates) are all from the South region.
+```{r}
+# Create line/point plot of all states, all causes of death
+lcod_reg_wide %>%
+  # Filter out the rows that include the United States at large
+  filter(state != "United States") %>%
+  # Create ggplot and aesthetic mappings, notably reordering the 'state' variable according to 'all causes'
+  ggplot(aes(x = year, y = `All causes`, color = fct_rev(fct_reorder(state, `All causes`)))) +
+  # Add scatterplot layer to the plot
+  geom_point() +
+  # Add line layer to the plot
+  geom_line() +
+  # Add label to color legend
+  scale_color_discrete(name = "Region")
+```
+
+
+### Subset of states for all causes of death
+
+To get a closer look, let's examine the same plot but with only the 2 highest states, the 2 lowest, and an interesting case that dips dramatically from 1999 to 2016. Hawaii has a considerably lower rate than even the 2nd lowest state, Minnesota.
+```{r}
+# Recrease the line/point plot with a subset of states for all causes: 2 highest, 2 lowest, + Dc
+lcod_reg_wide %>%
+  # Filter out any undesired states, those not in this list
+  filter(state %in% c("Mississippi", "Alabama", "District of Columbia", "Minnesota", "Hawaii")) %>%
+  # Create ggplot and aesthetic mappings, notably reordering the 'state' variable according to 'all causes'
+  ggplot(aes(x = year, y = `All causes`, color = fct_rev(fct_reorder(state, `All causes`)))) +
+  # Add scatterplot layer to the plot
+  geom_point() +
+  # Add line layer to the plot
+  geom_line() +
+  # Add a title to the plot
+  labs(title = "All causes of death over time for subset of states") +
+  # Add label to color legend
+  scale_color_discrete(name = "State")
+```
+
+## District of Columbia
+
+The District of Columbia had a drastic change in age adjusted death rates over the time period from 1999-2016. Next, let's examine if there may be a similar trend within the various cause sub-categories.  
+```{r}
+# Investigate DC's causes of death in more detail
+lcod_reg %>%
+  # Filter out any rows that don't include DC
+  filter(state == "District of Columbia") %>%
+  # Create ggplot and aesthetic mappings and reorder causes by the age-adjusted death rate
+  ggplot(aes(x = year, y = age_adjusted_death_rate, color = fct_rev(fct_reorder(cause_name, age_adjusted_death_rate)))) +
+  # Add scatterplot layer to the plot
+  geom_point() +
+  # Add line layer to the plot
+  geom_line() +
+  # Add label to color legend
+  scale_color_discrete(name = "Cause of Death") +
+  # Add title and change x, y axis labels
+  labs(title = "DC's age adjusted death rate over time, by causes", y = "Age Adjusted Death Rate", x = "Year")
+```
+
+### Further analysis of DC's causes of death  
+
+At first glance, the visual drop in *all causes* does not seem to be completely accounted for by the subcategories. We can compute a summary of the sub-categories of causes to determine what proportion of *all causes* they account for.
+
+```{r dc_anomaly}
+# Create new dataframe: dc_addr containing DC's causes of death in 1999 vs 2016
+dc_aadr <- lcod_reg %>%
+  # Filter out any 'state' that isn't DC
+  filter(state == "District of Columbia") %>%
+  # Filter out 'All causes'
+  filter(cause_name != "All causes") %>%
+  # Group the data by year (1999 and 2016)
+  group_by(year) %>%
+  # Create sums of the age-adjusted death rate
+  summarize(sum_aadr = sum(age_adjusted_death_rate))
+
+# Add age-adjusted death rate from DC's 'All causes'
+dc_aadr$all_causes <- lcod_reg %>%  
+  # Filter out rows with any 'state' that isn't DC
+  filter(state == "District of Columbia") %>%
+  # Filter out rows with any cause that isn't 'All causes'
+  filter(cause_name == "All causes") %>%
+  # Select only the age_adjusted_death_rate column
+  select(age_adjusted_death_rate) %>%
+  # Retrieve the vector (column), to be stored in dc_aadr$all_causes 
+  pull()
+```
+
+The code below computes the proportion of the 10 causes in this data set over *all causes* reveals an interesting anomaly in the 2016 data.
+```{R dc_prop}
+# Calculate proportion of causes included within all_causes
+dc_aadr <- dc_aadr %>%
+  # Using mutate, create a new column, prop, the proportion of the combined causes' aadr over 'all causes' 
+  mutate(prop = sum_aadr/all_causes)
+```
+
+
+It appears that there are other causes for the death rate in the District of Columbia, particularly in recent years, which are not captured by this dataset. Since 2002, there has been a downward trend in the proportion of *all causes* that are accounted for by sub-categories.
+
+```{r dc_prop_plot}
+# Create ggplot and aesthetic mappings
+ggplot(dc_aadr, aes(x = year, y = prop)) +
+  # Add scatterplot layer to the plot
+  geom_point() + 
+  # Add line layer to the plot
+  geom_line() +
+  # Add smoothing with linear model
+  geom_smooth(method = "lm", color = "red") +
+  # Add title and adjust axis labels
+  labs(title = "Proportion of DC's sub-categories making up all causes of death",
+       y = "Proportion of sub-categories", x = "Year") 
+```
